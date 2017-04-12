@@ -1408,6 +1408,7 @@ static const struct autopause {
 #define	RES_OUTOFMEMORY	(-2)		/*!< Out of memory */
 #define	RES_NOSUCHQUEUE	(-3)		/*!< No such queue */
 #define RES_NOT_DYNAMIC (-4)		/*!< Member is not dynamic */
+#define RES_NOT_CALLER  (-5)		/*!< Caller not found */
 
 static char *app = "Queue";
 
@@ -7232,6 +7233,38 @@ static int add_to_queue(const char *queuename, const char *interface, const char
 	return res;
 }
 
+
+/*! \brief Change priority caller into a queue
+ * \retval RES_NOSUCHQUEUE queue does not exist
+ * \retval RES_OKAY change priority
+ * \retval RES_NOT_CALLER queue exists but no caller
+*/
+static int change_priority_caller_on_queue(const char *queuename, const char *caller, int priority)
+{
+	struct call_queue *q;
+	struct queue_ent *qe;
+	int res = RES_NOSUCHQUEUE;
+
+	/*! \note Ensure the appropriate realtime queue is loaded.  Note that this
+	 * short-circuits if the queue is already in memory. */
+	if (!(q = find_load_queue_rt_friendly(queuename))) {
+		return res;
+	}		 
+
+	ao2_lock(q);
+	for (qe = q->head; qe; qe = qe->next) {
+		if (strcmp(ast_channel_name(qe->chan), caller) == 0) {
+			ast_debug(1, "%s Caller new prioriry %d in queue %s\n",
+			             caller, priority, queuename);
+			qe->prio = priority;
+			return RES_OKAY;
+		}
+	}
+	ao2_unlock(q);
+	return RES_NOT_CALLER;
+}
+
+
 static int publish_queue_member_pause(struct call_queue *q, struct member *member, const char *reason)
 {
 	struct ast_json *json_blob = queue_member_blob_create(q, member);
@@ -9507,6 +9540,8 @@ static char *__queues_show(struct mansession *s, int fd, int argc, const char * 
 					(long) (now - qe->start) % 60, qe->prio);
 				do_print(s, fd, ast_str_buffer(out));
 			}
+
+
 		}
 		do_print(s, fd, "");	/* blank line between entries */
 		ao2_unlock(q);
@@ -10376,6 +10411,56 @@ static char *handle_queue_remove_member(struct ast_cli_entry *e, int cmd, struct
 	return res;
 }
 
+
+
+static char *handle_queue_change_priority_caller(struct ast_cli_entry *e, int cmd, struct ast_cli_args *a)
+{
+	const char *queuename, *caller;
+	int priority;
+	char *res = CLI_FAILURE;
+
+	switch (cmd) {
+	case CLI_INIT:
+		e->command = "queue priority caller";
+		e->usage =
+			"Usage: queue priority caller <channel> on <queue> to <priority>\n"
+			"       Remove a specific channel from a queue.\n";
+		return NULL;
+	}
+
+	ast_cli(a->fd, "\tTest %d %s\n", a->argc, a->argv[5]);
+	if (a->argc != 8) {
+		return CLI_SHOWUSAGE;
+	} else if (strcmp(a->argv[4], "on")) {
+		return CLI_SHOWUSAGE;
+	} else if (strcmp(a->argv[6], "to")) {
+		return CLI_SHOWUSAGE;
+	} else if (sscanf(a->argv[7], "%30d", &priority) != 1) {
+		ast_log (LOG_ERROR, "<priority> parameter must be an integer.\n");
+		return CLI_SHOWUSAGE;
+	}
+
+	caller = a->argv[3];
+	queuename = a->argv[5];
+
+	switch (change_priority_caller_on_queue(queuename, caller, priority)) {
+	case RES_OKAY:
+		res = CLI_SUCCESS;
+		break;
+	case RES_NOSUCHQUEUE:
+		ast_cli(a->fd, "Unable change priority caller %s on queue '%s': No such queue\n", caller, queuename);
+		break;
+	case RES_NOT_CALLER:
+		ast_cli(a->fd, "Unable to change priority caller '%s' on queue '%s': Not there\n", caller, queuename);
+
+		break;
+	}
+
+	return res;
+}
+
+
+
 static char *complete_queue_pause_member(const char *line, const char *word, int pos, int state)
 {
 	/* 0 - queue; 1 - pause; 2 - member; 3 - <interface>; 4 - queue; 5 - <queue>; 6 - reason; 7 - <reason> */
@@ -10821,6 +10906,7 @@ static struct ast_cli_entry cli_queue[] = {
 	AST_CLI_DEFINE(handle_queue_set_member_ringinuse, "Set ringinuse for a channel of a specified queue"),
 	AST_CLI_DEFINE(handle_queue_reload, "Reload queues, members, queue rules, or parameters"),
 	AST_CLI_DEFINE(handle_queue_reset, "Reset statistics for a queue"),
+	AST_CLI_DEFINE(handle_queue_change_priority_caller, "Change priority caller on queue"),
 };
 
 /* struct call_queue astdata mapping. */
