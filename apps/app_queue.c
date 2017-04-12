@@ -7272,16 +7272,17 @@ static int change_priority_caller_on_queue(const char *queuename, const char *ca
 	}		 
 
 	ao2_lock(q);
+	res = RES_NOT_CALLER;
 	for (qe = q->head; qe; qe = qe->next) {
 		if (strcmp(ast_channel_name(qe->chan), caller) == 0) {
 			ast_debug(1, "%s Caller new prioriry %d in queue %s\n",
 			             caller, priority, queuename);
 			qe->prio = priority;
-			return RES_OKAY;
+			res = RES_OKAY;
 		}
 	}
 	ao2_unlock(q);
-	return RES_NOT_CALLER;
+	return res;
 }
 
 
