@@ -9540,8 +9540,6 @@ static char *__queues_show(struct mansession *s, int fd, int argc, const char * 
 					(long) (now - qe->start) % 60, qe->prio);
 				do_print(s, fd, ast_str_buffer(out));
 			}
-
-
 		}
 		do_print(s, fd, "");	/* blank line between entries */
 		ao2_unlock(q);
@@ -10428,7 +10426,6 @@ static char *handle_queue_change_priority_caller(struct ast_cli_entry *e, int cm
 		return NULL;
 	}
 
-	ast_cli(a->fd, "\tTest %d %s\n", a->argc, a->argv[5]);
 	if (a->argc != 8) {
 		return CLI_SHOWUSAGE;
 	} else if (strcmp(a->argv[4], "on")) {
