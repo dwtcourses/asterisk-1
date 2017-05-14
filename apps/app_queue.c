@@ -1669,6 +1669,7 @@ struct call_queue {
 	unsigned int timeoutrestart:1;
 	unsigned int announceholdtime:2;
 	unsigned int announceposition:3;
+	unsigned int announcepositiononlyup:1; /* Say position if only the change if up not down on caller positions*/
 	int strategy:4;
 	unsigned int realtime:1;
 	unsigned int found:1;
@@ -3124,6 +3125,8 @@ static void queue_set_param(struct call_queue *q, const char *param, const char 
 		} else {
 			q->announceposition = ANNOUNCEPOSITION_NO;
 		}
+	} else if (!strcasecmp(param, "announce-position-only-up")) {
+		q->announcepositiononlyup = ast_true(val);
 	} else if (!strcasecmp(param, "announce-position-limit")) {
 		q->announcepositionlimit = atoi(val);
 	} else if (!strcasecmp(param, "periodic-announce")) {
@@ -3861,6 +3864,11 @@ static int say_position(struct queue_ent *qe, int ringing)
 
 	/* If either our position has changed, or we are over the freq timer, say position */
 	if ((qe->last_pos_said == qe->pos) && ((now - qe->last_pos) < qe->parent->announcefrequency)) {
+		return 0;
+	}
+
+	/* If position has change but if set announce-position-only-up and the last position said is lower */
+	if (qe->parent->announcepositiononlyup && (qe->last_pos_said < qe->pos)) {
 		return 0;
 	}
 

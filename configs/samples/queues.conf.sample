@@ -97,7 +97,7 @@ monitor-type = MixMonitor
 ; fewestcalls - ring the one with fewest completed calls from this queue
 ; random - ring random interface
 ; rrmemory - round robin with memory, remember where we left off last ring pass
-; rrordered - same as rrmemory, except the queue member order from config file 
+; rrordered - same as rrmemory, except the queue member order from config file
 ;             is preserved
 ; linear - rings interfaces in the order specified in this configuration file.
 ;          If you use dynamic members, the members will be rung in the order in
@@ -344,6 +344,11 @@ monitor-type = MixMonitor
 ; Valid values are 0, 5, 10, 15, 20, and 30.
 ;
 ; announce-round-seconds = 10
+;
+; Only need say the position is up in caller list?
+; If set to yes, the announce of the position only when is up
+;
+; announce-position-only-up = no
 ;
 ; Use these sound files in making position/holdtime announcements.  The
 ; defaults are as listed below -- change only if you need to.
