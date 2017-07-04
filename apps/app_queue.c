@@ -3854,6 +3854,7 @@ static int say_position(struct queue_ent *qe, int ringing)
 	int res = 0, announceposition = 0;
 	long avgholdmins, avgholdsecs;
 	int say_thanks = 1;
+	int pos_to_say = qe->pos;
 	time_t now;
 
 	/* Let minannouncefrequency seconds pass between the start of each position announcement */
@@ -3868,8 +3869,10 @@ static int say_position(struct queue_ent *qe, int ringing)
 	}
 
 	/* If position has change but if set announce-position-only-up and the last position said is lower */
-	if (qe->parent->announcepositiononlyup && (qe->last_pos_said < qe->pos)) {
-		return 0;
+	ast_log(LOG_NOTICE, "announcepositiononlyup '%i' qe->last_pos_said '%i' qe->pos '%i' \n", qe->parent->announcepositiononlyup, qe->last_pos_said, qe->pos);
+	
+	if (qe->parent->announcepositiononlyup && (qe->last_pos_said < qe->pos) && qe->last_pos_said > 0) {
+		pos_to_say = qe->last_pos_said;
 	}
 
 	if (ringing) {
@@ -3888,7 +3891,7 @@ static int say_position(struct queue_ent *qe, int ringing)
 
 	if (announceposition == 1) {
 		/* Say we're next, if we are */
-		if (qe->pos == 1) {
+		if (pos_to_say == 1) {
 			res = play_file(qe->chan, qe->parent->sound_next);
 			if (res) {
 				goto playout;
@@ -3911,7 +3914,7 @@ static int say_position(struct queue_ent *qe, int ringing)
 				if (res) {
 					goto playout;
 				}
-				res = ast_say_number(qe->chan, qe->pos, AST_DIGIT_ANY, ast_channel_language(qe->chan), NULL); /* Needs gender */
+				res = ast_say_number(qe->chan, pos_to_say, AST_DIGIT_ANY, ast_channel_language(qe->chan), NULL); /* Needs gender */
 				if (res) {
 					goto playout;
 				}
@@ -4002,7 +4005,9 @@ playout:
 
 	/* Set our last_pos indicators */
 	qe->last_pos = now;
-	qe->last_pos_said = qe->pos;
+	if (!(qe->parent->announcepositiononlyup && (qe->last_pos_said < qe->pos) && qe->last_pos_said > 0)) {
+		qe->last_pos_said = qe->pos;
+	}
 
 	/* Don't restart music on hold if we're about to exit the caller from the queue */
 	if (!res) {
