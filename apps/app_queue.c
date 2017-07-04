@@ -2704,6 +2704,7 @@ static void init_queue(struct call_queue *q)
 	q->announceholdtime = 1;
 	q->announcepositionlimit = 10; /* Default 10 positions */
 	q->announceposition = ANNOUNCEPOSITION_YES; /* Default yes */
+	q->announcepositiononlyup = 0;
 	q->roundingseconds = 0; /* Default - don't announce seconds */
 	q->servicelevel = 0;
 	q->ringinuse = 1;
