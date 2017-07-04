@@ -10492,6 +10492,8 @@ static char *handle_queue_change_priority_caller(struct ast_cli_entry *e, int cm
 			"Usage: queue priority caller <channel> on <queue> to <priority>\n"
 			"       Remove a specific channel from a queue.\n";
 		return NULL;
+	case CLI_GENERATE:
+		return NULL;
 	}
 
 	if (a->argc != 8) {
