@@ -3869,8 +3869,6 @@ static int say_position(struct queue_ent *qe, int ringing)
 	}
 
 	/* If position has change but if set announce-position-only-up and the last position said is lower */
-	ast_log(LOG_NOTICE, "announcepositiononlyup '%i' qe->last_pos_said '%i' qe->pos '%i' \n", qe->parent->announcepositiononlyup, qe->last_pos_said, qe->pos);
-	
 	if (qe->parent->announcepositiononlyup && (qe->last_pos_said < qe->pos) && qe->last_pos_said > 0) {
 		pos_to_say = qe->last_pos_said;
 	}
