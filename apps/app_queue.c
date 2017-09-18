@@ -3257,6 +3257,7 @@ static void rt_handle_member_record(struct call_queue *q, char *category, struct
 	int penalty = 0;
 	int paused  = 0;
 	int found = 0;
+	int wrapuptime = 0;
 	int ringinuse = q->ringinuse;
 
 	const char *config_val;
@@ -3266,6 +3267,7 @@ static void rt_handle_member_record(struct call_queue *q, char *category, struct
 	const char *state_interface = S_OR(ast_variable_retrieve(member_config, category, "state_interface"), interface);
 	const char *penalty_str = ast_variable_retrieve(member_config, category, "penalty");
 	const char *paused_str = ast_variable_retrieve(member_config, category, "paused");
+	const char *wrapuptime_str = ast_variable_retrieve(member_config, category, "wrapuptime");
 
 	if (ast_strlen_zero(rt_uniqueid)) {
 		ast_log(LOG_WARNING, "Realtime field uniqueid is empty for member %s\n", S_OR(membername, "NULL"));
@@ -3285,6 +3287,13 @@ static void rt_handle_member_record(struct call_queue *q, char *category, struct
 		paused = atoi(paused_str);
 		if (paused < 0) {
 			paused = 0;
+		}
+	}
+
+	if (wrapuptime_str) {
+		wrapuptime = atoi(wrapuptime_str);
+		if (wrapuptime < 0) {
+			wrapuptime = 0;
 		}
 	}
 
@@ -3314,6 +3323,7 @@ static void rt_handle_member_record(struct call_queue *q, char *category, struct
 			}
 			m->penalty = penalty;
 			m->ringinuse = ringinuse;
+			m->wrapuptime = wrapuptime;
 			found = 1;
 			ao2_ref(m, -1);
 			break;
