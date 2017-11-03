@@ -7769,7 +7769,6 @@ static int aqm_exec(struct ast_channel *chan, const char *data)
 		AST_APP_ARG(state_interface);
 	);
 	int penalty = 0;
-	ast_log(LOG_WARNING, "Aqm_Exec AddQueueMember requires an argument (queuename[,interface[,penalty[,options[,membername[,stateinterface]]]]])\n");
 
 	if (ast_strlen_zero(data)) {
 		ast_log(LOG_WARNING, "AddQueueMember requires an argument (queuename[,interface[,penalty[,options[,membername[,stateinterface]]]]])\n");
