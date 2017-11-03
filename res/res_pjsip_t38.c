@@ -278,7 +278,7 @@ static int t38_reinvite_sdp_cb(struct ast_sip_session *session, pjmedia_sdp_sess
 	/* Move the image media stream to the front and have it as the only stream, pjmedia will fill in
 	 * dummy streams for the rest
 	 */
-	for (stream = 0; stream < sdp->media_count++; ++stream) {
+	for (stream = 0; stream < sdp->media_count; ++stream) {
 		if (!pj_strcmp2(&sdp->media[stream]->desc.media, "image")) {
 			sdp->media[0] = sdp->media[stream];
 			sdp->media_count = 1;
@@ -400,7 +400,8 @@ static int t38_interpret_parameters(void *obj)
 }
 
 /*! \brief Frame hook callback for writing */
-static struct ast_frame *t38_framehook_write(struct ast_sip_session *session, struct ast_frame *f)
+static struct ast_frame *t38_framehook_write(struct ast_channel *chan,
+	struct ast_sip_session *session, struct ast_frame *f)
 {
 	if (f->frametype == AST_FRAME_CONTROL && f->subclass.integer == AST_CONTROL_T38_PARAMETERS &&
 		session->endpoint->media.t38.enabled) {
@@ -414,27 +415,36 @@ static struct ast_frame *t38_framehook_write(struct ast_sip_session *session, st
 			ao2_ref(data, -1);
 		}
 	} else if (f->frametype == AST_FRAME_MODEM) {
-		RAII_VAR(struct ast_sip_session_media *, session_media, NULL, ao2_cleanup);
+		struct ast_sip_session_media *session_media;
 
-		if ((session_media = ao2_find(session->media, "image", OBJ_KEY)) &&
-			session_media->udptl) {
+		/* Avoid deadlock between chan and the session->media container lock */
+		ast_channel_unlock(chan);
+		session_media = ao2_find(session->media, "image", OBJ_SEARCH_KEY);
+		ast_channel_lock(chan);
+		if (session_media && session_media->udptl) {
 			ast_udptl_write(session_media->udptl, f);
 		}
+		ao2_cleanup(session_media);
 	}
 
 	return f;
 }
 
 /*! \brief Frame hook callback for reading */
-static struct ast_frame *t38_framehook_read(struct ast_sip_session *session, struct ast_frame *f)
+static struct ast_frame *t38_framehook_read(struct ast_channel *chan,
+	struct ast_sip_session *session, struct ast_frame *f)
 {
 	if (ast_channel_fdno(session->channel) == 5) {
-		RAII_VAR(struct ast_sip_session_media *, session_media, NULL, ao2_cleanup);
+		struct ast_sip_session_media *session_media;
 
-		if ((session_media = ao2_find(session->media, "image", OBJ_KEY)) &&
-			session_media->udptl) {
+		/* Avoid deadlock between chan and the session->media container lock */
+		ast_channel_unlock(chan);
+		session_media = ao2_find(session->media, "image", OBJ_SEARCH_KEY);
+		ast_channel_lock(chan);
+		if (session_media && session_media->udptl) {
 			f = ast_udptl_read(session_media->udptl);
 		}
+		ao2_cleanup(session_media);
 	}
 
 	return f;
@@ -447,9 +457,9 @@ static struct ast_frame *t38_framehook(struct ast_channel *chan, struct ast_fram
 	struct ast_sip_channel_pvt *channel = ast_channel_tech_pvt(chan);
 
 	if (event == AST_FRAMEHOOK_EVENT_READ) {
-		f = t38_framehook_read(channel->session, f);
+		f = t38_framehook_read(chan, channel->session, f);
 	} else if (event == AST_FRAMEHOOK_EVENT_WRITE) {
-		f = t38_framehook_write(channel->session, f);
+		f = t38_framehook_write(chan, channel->session, f);
 	}
 
 	return f;
@@ -940,7 +950,7 @@ static int load_module(void)
 end:
 	unload_module();
 
-	return AST_MODULE_LOAD_FAILURE;
+	return AST_MODULE_LOAD_DECLINE;
 }
 
 AST_MODULE_INFO(ASTERISK_GPL_KEY, AST_MODFLAG_LOAD_ORDER, "PJSIP T.38 UDPTL Support",

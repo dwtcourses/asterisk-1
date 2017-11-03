@@ -373,6 +373,8 @@ static int dtmf_handler(const struct aco_option *opt, struct ast_variable *var, 
 		endpoint->dtmf = AST_SIP_DTMF_RFC_4733;
 	} else if (!strcasecmp(var->value, "inband")) {
 		endpoint->dtmf = AST_SIP_DTMF_INBAND;
+	} else if (!strcasecmp(var->value, "auto_info")) {
+		endpoint->dtmf = AST_SIP_DTMF_AUTO_INFO;
 	} else if (!strcasecmp(var->value, "info")) {
 		endpoint->dtmf = AST_SIP_DTMF_INFO;
 	} else if (!strcasecmp(var->value, "auto")) {
@@ -397,8 +399,11 @@ static int dtmf_to_str(const void *obj, const intptr_t *args, char **buf)
 		*buf = "inband"; break;
 	case AST_SIP_DTMF_INFO :
 		*buf = "info"; break;
-       case AST_SIP_DTMF_AUTO :
+	case AST_SIP_DTMF_AUTO :
 		*buf = "auto"; break;
+	case AST_SIP_DTMF_AUTO_INFO :
+		*buf = "auto_info";
+		break;
 	default:
 		*buf = "none";
 	}
@@ -1940,6 +1945,8 @@ int ast_res_pjsip_initialize_configuration(const struct ast_module_info *ast_mod
 	ast_sorcery_object_field_register(sip_sorcery, "endpoint", "asymmetric_rtp_codec", "no", OPT_BOOL_T, 1, FLDSET(struct ast_sip_endpoint, asymmetric_rtp_codec));
 	ast_sorcery_object_field_register(sip_sorcery, "endpoint", "rtcp_mux", "no", OPT_BOOL_T, 1, FLDSET(struct ast_sip_endpoint, rtcp_mux));
 	ast_sorcery_object_field_register(sip_sorcery, "endpoint", "allow_overlap", "yes", OPT_BOOL_T, 1, FLDSET(struct ast_sip_endpoint, allow_overlap));
+	ast_sorcery_object_field_register(sip_sorcery, "endpoint", "refer_blind_progress", "yes", OPT_BOOL_T, 1, FLDSET(struct ast_sip_endpoint, refer_blind_progress));
+	ast_sorcery_object_field_register(sip_sorcery, "endpoint", "notify_early_inuse_ringing", "no", OPT_BOOL_T, 1, FLDSET(struct ast_sip_endpoint, notify_early_inuse_ringing));
 
 	if (ast_sip_initialize_sorcery_transport()) {
 		ast_log(LOG_ERROR, "Failed to register SIP transport support with sorcery\n");

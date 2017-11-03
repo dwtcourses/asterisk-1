@@ -471,6 +471,7 @@ static void bridge_complete_join(struct ast_bridge *bridge)
 	}
 
 	AST_LIST_TRAVERSE(&bridge->channels, bridge_channel, entry) {
+		bridge_channel_queue_deferred_frames(bridge_channel);
 		if (!bridge_channel->just_joined) {
 			continue;
 		}
@@ -4240,14 +4241,15 @@ static enum ast_transfer_result attended_transfer_bridge(struct ast_channel *cha
 	BRIDGE_LOCK_ONE_OR_BOTH(bridge1, bridge2);
 
 	if (bridge2) {
+		void *tech;
 		struct ast_channel *locals[2];
 
 		/* Have to lock everything just in case a hangup comes in early */
-		ast_local_lock_all(local_chan, &locals[0], &locals[1]);
+		ast_local_lock_all2(local_chan, &tech, &locals[0], &locals[1]);
 		if (!locals[0] || !locals[1]) {
 			ast_log(LOG_ERROR, "Transfer failed probably due to an early hangup - "
 				"missing other half of '%s'\n", ast_channel_name(local_chan));
-			ast_local_unlock_all(local_chan);
+			ast_local_unlock_all2(tech, locals[0], locals[1]);
 			ao2_cleanup(local_chan);
 			return AST_BRIDGE_TRANSFER_FAIL;
 		}
@@ -4258,7 +4260,7 @@ static enum ast_transfer_result attended_transfer_bridge(struct ast_channel *cha
 		}
 
 		ast_attended_transfer_message_add_link(transfer_msg, locals);
-		ast_local_unlock_all(local_chan);
+		ast_local_unlock_all2(tech, locals[0], locals[1]);
 	} else {
 		ast_attended_transfer_message_add_app(transfer_msg, app, local_chan);
 	}
@@ -4786,7 +4788,7 @@ enum ast_transfer_result ast_bridge_transfer_attended(struct ast_channel *to_tra
 	res = AST_BRIDGE_TRANSFER_SUCCESS;
 
 end:
-	if (res == AST_BRIDGE_TRANSFER_SUCCESS && hangup_target) {
+	if ((res == AST_BRIDGE_TRANSFER_SUCCESS && hangup_target) || res == AST_BRIDGE_TRANSFER_FAIL) {
 		ast_softhangup(to_transfer_target, AST_SOFTHANGUP_DEV);
 	}
 

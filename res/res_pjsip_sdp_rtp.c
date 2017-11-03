@@ -209,24 +209,30 @@ static int create_rtp(struct ast_sip_session *session, struct ast_sip_session_me
 				session->endpoint->media.address);
 		}
 	} else {
-		struct ast_sip_transport *transport =
-			ast_sorcery_retrieve_by_id(ast_sip_get_sorcery(), "transport",
-									   session->endpoint->transport);
+		struct ast_sip_transport *transport;
 
-		if (transport && transport->state) {
-			char hoststr[PJ_INET6_ADDRSTRLEN];
+		transport = ast_sorcery_retrieve_by_id(ast_sip_get_sorcery(), "transport",
+			session->endpoint->transport);
+		if (transport) {
+			struct ast_sip_transport_state *trans_state;
 
-			pj_sockaddr_print(&transport->state->host, hoststr, sizeof(hoststr), 0);
-			if (ast_sockaddr_parse(&temp_media_address, hoststr, 0)) {
-				ast_debug(1, "Transport %s bound to %s: Using it for RTP media.\n",
-					session->endpoint->transport, hoststr);
-				media_address = &temp_media_address;
-			} else {
-				ast_debug(1, "Transport %s bound to %s: Invalid for RTP media.\n",
-					session->endpoint->transport, hoststr);
+			trans_state = ast_sip_get_transport_state(ast_sorcery_object_get_id(transport));
+			if (trans_state) {
+				char hoststr[PJ_INET6_ADDRSTRLEN];
+
+				pj_sockaddr_print(&trans_state->host, hoststr, sizeof(hoststr), 0);
+				if (ast_sockaddr_parse(&temp_media_address, hoststr, 0)) {
+					ast_debug(1, "Transport %s bound to %s: Using it for RTP media.\n",
+						session->endpoint->transport, hoststr);
+					media_address = &temp_media_address;
+				} else {
+					ast_debug(1, "Transport %s bound to %s: Invalid for RTP media.\n",
+						session->endpoint->transport, hoststr);
+				}
+				ao2_ref(trans_state, -1);
 			}
+			ao2_ref(transport, -1);
 		}
-		ao2_cleanup(transport);
 	}
 
 	if (!(session_media->rtp = ast_rtp_instance_new(session->endpoint->media.rtp.engine, sched, media_address, NULL))) {
@@ -240,7 +246,7 @@ static int create_rtp(struct ast_sip_session *session, struct ast_sip_session_me
 		ice->stop(session_media->rtp);
 	}
 
-	if (session->endpoint->dtmf == AST_SIP_DTMF_RFC_4733 || session->endpoint->dtmf == AST_SIP_DTMF_AUTO) {
+	if (session->endpoint->dtmf == AST_SIP_DTMF_RFC_4733 || session->endpoint->dtmf == AST_SIP_DTMF_AUTO || session->endpoint->dtmf == AST_SIP_DTMF_AUTO_INFO) {
 		ast_rtp_instance_dtmf_mode_set(session_media->rtp, AST_RTP_DTMF_MODE_RFC2833);
 		ast_rtp_instance_set_prop(session_media->rtp, AST_RTP_PROPERTY_DTMF, 1);
 	} else if (session->endpoint->dtmf == AST_SIP_DTMF_INBAND) {
@@ -263,7 +269,7 @@ static int create_rtp(struct ast_sip_session *session, struct ast_sip_session_me
 }
 
 static void get_codecs(struct ast_sip_session *session, const struct pjmedia_sdp_media *stream, struct ast_rtp_codecs *codecs,
-       struct ast_sip_session_media *session_media)
+	struct ast_sip_session_media *session_media)
 {
 	pjmedia_sdp_attr *attr;
 	pjmedia_sdp_rtpmap *rtpmap;
@@ -329,6 +335,16 @@ static void get_codecs(struct ast_sip_session *session, const struct pjmedia_sdp
 	if (!tel_event && (session->endpoint->dtmf == AST_SIP_DTMF_AUTO)) {
 		ast_rtp_instance_dtmf_mode_set(session_media->rtp, AST_RTP_DTMF_MODE_INBAND);
 	}
+
+	if (session->endpoint->dtmf == AST_SIP_DTMF_AUTO_INFO) {
+		if  (tel_event) {
+			ast_rtp_instance_dtmf_mode_set(session_media->rtp, AST_RTP_DTMF_MODE_RFC2833);
+		} else {
+			ast_rtp_instance_dtmf_mode_set(session_media->rtp, AST_RTP_DTMF_MODE_NONE);
+		}
+	}
+
+
 	/* Get the packetization, if it exists */
 	if ((attr = pjmedia_sdp_media_find_attr2(stream, "ptime", NULL))) {
 		unsigned long framing = pj_strtoul(pj_strltrim(&attr->value));
@@ -395,7 +411,24 @@ static int set_caps(struct ast_sip_session *session, struct ast_sip_session_medi
 		ast_format_cap_append_from_cap(caps, ast_channel_nativeformats(session->channel),
 			AST_MEDIA_TYPE_UNKNOWN);
 		ast_format_cap_remove_by_type(caps, media_type);
-		ast_format_cap_append_from_cap(caps, joint, media_type);
+
+		/*
+		 * If we don't allow the sending codec to be changed on our side
+		 * then get the best codec from the joint capabilities of the media
+		 * type and use only that. This ensures the core won't start sending
+		 * out a format that we aren't currently sending.
+		 */
+		if (!session->endpoint->asymmetric_rtp_codec) {
+			struct ast_format *best;
+
+			best = ast_format_cap_get_best_by_type(joint, media_type);
+			if (best) {
+				ast_format_cap_append(caps, best, ast_format_cap_get_framing(joint));
+				ao2_ref(best, -1);
+			}
+		} else {
+			ast_format_cap_append_from_cap(caps, joint, media_type);
+		}
 
 		/*
 		 * Apply the new formats to the channel, potentially changing
@@ -406,7 +439,8 @@ static int set_caps(struct ast_sip_session *session, struct ast_sip_session_medi
 			ast_set_read_format(session->channel, ast_channel_readformat(session->channel));
 			ast_set_write_format(session->channel, ast_channel_writeformat(session->channel));
 		}
-		if ((session->endpoint->dtmf == AST_SIP_DTMF_AUTO)
+
+		if ( ((session->endpoint->dtmf == AST_SIP_DTMF_AUTO) || (session->endpoint->dtmf == AST_SIP_DTMF_AUTO_INFO) )
 		    && (ast_rtp_instance_dtmf_mode_get(session_media->rtp) == AST_RTP_DTMF_MODE_RFC2833)
 		    && (session->dsp)) {
 			dsp_features = ast_dsp_get_features(session->dsp);
@@ -1126,7 +1160,7 @@ static int create_outgoing_sdp_stream(struct ast_sip_session *session, struct as
 	pj_str_t stmp;
 	pjmedia_sdp_attr *attr;
 	int index = 0;
-	int noncodec = (session->endpoint->dtmf == AST_SIP_DTMF_RFC_4733 || session->endpoint->dtmf == AST_SIP_DTMF_AUTO) ? AST_RTP_DTMF : 0;
+	int noncodec = (session->endpoint->dtmf == AST_SIP_DTMF_RFC_4733 || session->endpoint->dtmf == AST_SIP_DTMF_AUTO || session->endpoint->dtmf == AST_SIP_DTMF_AUTO_INFO) ? AST_RTP_DTMF : 0;
 	int min_packet_size = 0, max_packet_size = 0;
 	int rtp_code;
 	RAII_VAR(struct ast_format_cap *, caps, NULL, ao2_cleanup);
@@ -1622,7 +1656,7 @@ static int load_module(void)
 end:
 	unload_module();
 
-	return AST_MODULE_LOAD_FAILURE;
+	return AST_MODULE_LOAD_DECLINE;
 }
 
 AST_MODULE_INFO(ASTERISK_GPL_KEY, AST_MODFLAG_LOAD_ORDER, "PJSIP SDP RTP/AVP stream handler",

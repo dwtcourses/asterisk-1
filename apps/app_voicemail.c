@@ -507,6 +507,7 @@ static int imapversion = 1;
 
 static int expungeonhangup = 1;
 static int imapgreetings = 0;
+static int imap_poll_logout = 0;
 static char delimiter = '\0';
 
 /* mail_open cannot be protected on a stream basis */
@@ -544,6 +545,8 @@ static int imap_retrieve_file (const char *dir, const int msgnum, const char *ma
 static int imap_delete_old_greeting (char *dir, struct vm_state *vms);
 static void check_quota(struct vm_state *vms, char *mailbox);
 static int open_mailbox(struct vm_state *vms, struct ast_vm_user *vmu, int box);
+static void imap_logout(const char *mailbox_id);
+
 struct vmstate {
 	struct vm_state *vms;
 	AST_LIST_ENTRY(vmstate) list;
@@ -2730,9 +2733,9 @@ static int imap_store_file(const char *dir, const char *mailboxuser, const char 
 			*(vmu->email) = '\0';
 		return -1;
 	}
-	if (fread(buf, len, 1, p) < len) {
+	if (fread(buf, 1, len, p) != len) {
 		if (ferror(p)) {
-			ast_log(LOG_ERROR, "Short read while reading in mail file.\n");
+			ast_log(LOG_ERROR, "Error while reading mail file: %s\n", tmp);
 			return -1;
 		}
 	}
@@ -4745,12 +4748,12 @@ static int inbuf(struct baseio *bio, FILE *fi)
 	if (bio->ateof)
 		return 0;
 
-	if ((l = fread(bio->iobuf, 1, BASEMAXINLINE, fi)) <= 0) {
-		if (ferror(fi))
-			return -1;
-
+	if ((l = fread(bio->iobuf, 1, BASEMAXINLINE, fi)) != BASEMAXINLINE) {
 		bio->ateof = 1;
-		return 0;
+		if (l == 0) {
+			/* Assume EOF */
+			return 0;
+		}
 	}
 
 	bio->iolen = l;
@@ -12226,6 +12229,9 @@ static int append_mailbox(const char *context, const char *box, const char *data
 	strcat(mailbox_full, context);
 
 	inboxcount2(mailbox_full, &urgent, &new, &old);
+#ifdef IMAP_STORAGE
+	imap_logout(mailbox_full);
+#endif
 	queue_mwi_event(NULL, mailbox_full, urgent, new, old);
 
 	return 0;
@@ -12978,6 +12984,12 @@ static void poll_subscribed_mailbox(struct mwi_sub *mwi_sub)
 
 	inboxcount2(mwi_sub->mailbox, &urgent, &new, &old);
 
+#ifdef IMAP_STORAGE
+	if (imap_poll_logout) {
+		imap_logout(mwi_sub->mailbox);
+	}
+#endif
+
 	if (urgent != mwi_sub->old_urgent || new != mwi_sub->old_new || old != mwi_sub->old_old) {
 		mwi_sub->old_urgent = urgent;
 		mwi_sub->old_new = new;
@@ -13029,6 +13041,55 @@ static void mwi_sub_destroy(struct mwi_sub *mwi_sub)
 	ast_free(mwi_sub);
 }
 
+#ifdef IMAP_STORAGE
+static void imap_logout(const char *mailbox_id)
+{
+	char *context;
+	char *mailbox;
+	struct ast_vm_user vmus;
+	RAII_VAR(struct ast_vm_user *, vmu, NULL, free_user);
+	struct vm_state *vms = NULL;
+
+	if (ast_strlen_zero(mailbox_id)
+		|| separate_mailbox(ast_strdupa(mailbox_id), &mailbox, &context)) {
+		return;
+	}
+
+	memset(&vmus, 0, sizeof(vmus));
+
+	if (!(vmu = find_user(&vmus, context, mailbox)) || vmu->imapuser[0] == '\0') {
+		return;
+	}
+
+	vms = get_vm_state_by_imapuser(vmu->imapuser, 0);
+	if (!vms) {
+		vms = get_vm_state_by_mailbox(mailbox, context, 0);
+	}
+	if (!vms) {
+		return;
+	}
+
+	ast_mutex_lock(&vms->lock);
+	vms->mailstream = mail_close(vms->mailstream);
+	ast_mutex_unlock(&vms->lock);
+
+	vmstate_delete(vms);
+}
+
+static void imap_close_subscribed_mailboxes(void)
+{
+	struct mwi_sub *mwi_sub;
+
+	AST_RWLIST_RDLOCK(&mwi_subs);
+	AST_RWLIST_TRAVERSE(&mwi_subs, mwi_sub, entry) {
+		if (!ast_strlen_zero(mwi_sub->mailbox)) {
+			imap_logout(mwi_sub->mailbox);
+		}
+	}
+	AST_RWLIST_UNLOCK(&mwi_subs);
+}
+#endif
+
 static int handle_unsubscribe(void *datap)
 {
 	struct mwi_sub *mwi_sub;
@@ -13040,6 +13101,9 @@ static int handle_unsubscribe(void *datap)
 			AST_LIST_REMOVE_CURRENT(entry);
 			/* Don't break here since a duplicate uniqueid
 			 * may have been added as a result of a cache dump. */
+#ifdef IMAP_STORAGE
+			imap_logout(mwi_sub->mailbox);
+#endif
 			mwi_sub_destroy(mwi_sub);
 		}
 	}
@@ -13477,7 +13541,11 @@ static int actual_load_config(int reload, struct ast_config *cfg, struct ast_con
 	strcpy(listen_control_restart_key, DEFAULT_LISTEN_CONTROL_RESTART_KEY);
 	strcpy(listen_control_stop_key, DEFAULT_LISTEN_CONTROL_STOP_KEY);
 
-	/* Free all the users structure */	
+#ifdef IMAP_STORAGE
+	imap_close_subscribed_mailboxes();
+#endif
+
+	/* Free all the users structure */
 	free_vm_users();
 
 	/* Free all the zones structure */
@@ -13641,6 +13709,11 @@ static int actual_load_config(int reload, struct ast_config *cfg, struct ast_con
 			ast_copy_string(greetingfolder, val, sizeof(greetingfolder));
 		} else {
 			ast_copy_string(greetingfolder, imapfolder, sizeof(greetingfolder));
+		}
+		if ((val = ast_variable_retrieve(cfg, "general", "imap_poll_logout"))) {
+			imap_poll_logout = ast_true(val);
+		} else {
+			imap_poll_logout = 0;
 		}
 
 		/* There is some very unorthodox casting done here. This is due
@@ -14871,6 +14944,9 @@ static int unload_module(void)
 	ast_unload_realtime("voicemail");
 	ast_unload_realtime("voicemail_data");
 
+#ifdef IMAP_STORAGE
+	imap_close_subscribed_mailboxes();
+#endif
 	free_vm_users();
 	free_vm_zones();
 	return res;
@@ -14897,7 +14973,7 @@ static int load_module(void)
 	umask(my_umask);
 
 	if (!(inprocess_container = ao2_container_alloc(573, inprocess_hash_fn, inprocess_cmp_fn))) {
-		return AST_MODULE_LOAD_FAILURE;
+		return AST_MODULE_LOAD_DECLINE;
 	}
 
 	/* compute the location of the voicemail spool directory */

@@ -379,7 +379,7 @@ static void cdr_write_callback(void *data, struct stasis_subscription *sub, stru
 			payload->cmd, payload->cmd);
 		return;
 	}
-	if (ast_strlen_zero(payload->value)) {
+	if (!payload->value) {
 		ast_log(AST_LOG_WARNING, "%s requires a value (%s(variable)=value)\n)",
 			payload->cmd, payload->cmd);
 		return;
@@ -651,7 +651,7 @@ static int load_module(void)
 	int res = 0;
 
 	if (!router) {
-		return AST_MODULE_LOAD_FAILURE;
+		return AST_MODULE_LOAD_DECLINE;
 	}
 
 	res |= STASIS_MESSAGE_TYPE_INIT(cdr_read_message_type);
@@ -667,7 +667,8 @@ static int load_module(void)
 	                                 cdr_read_callback, NULL);
 
 	if (res) {
-		return AST_MODULE_LOAD_FAILURE;
+		unload_module();
+		return AST_MODULE_LOAD_DECLINE;
 	}
 	return AST_MODULE_LOAD_SUCCESS;
 }

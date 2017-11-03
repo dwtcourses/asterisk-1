@@ -4819,14 +4819,10 @@ static int action_redirect(struct mansession *s, const struct message *m)
 
 	/* Release the bridge wait. */
 	if (chan1_wait) {
-		ast_channel_lock(chan);
-		ast_clear_flag(ast_channel_flags(chan), AST_FLAG_BRIDGE_DUAL_REDIRECT_WAIT);
-		ast_channel_unlock(chan);
+		ast_channel_clear_flag(chan, AST_FLAG_BRIDGE_DUAL_REDIRECT_WAIT);
 	}
 	if (chan2_wait) {
-		ast_channel_lock(chan2);
-		ast_clear_flag(ast_channel_flags(chan2), AST_FLAG_BRIDGE_DUAL_REDIRECT_WAIT);
-		ast_channel_unlock(chan2);
+		ast_channel_clear_flag(chan2, AST_FLAG_BRIDGE_DUAL_REDIRECT_WAIT);
 	}
 
 	chan2 = ast_channel_unref(chan2);
@@ -6458,6 +6454,12 @@ static int get_input(struct mansession *s, char *output)
 	}
 
 	ao2_lock(s->session);
+	/*
+	 * It is worth noting here that you can all but ignore fread()'s documentation
+	 * for the purposes of this call. The FILE * we are working with here was created
+	 * as a result of a call to fopencookie() (or equivalent) in tcptls.c, and as such
+	 * the behavior of fread() is not as documented. Frankly, I think this is gross.
+	 */
 	res = fread(src + s->session->inlen, 1, maxlen - s->session->inlen, s->session->f);
 	if (res < 1) {
 		res = -1;	/* error return */
@@ -8717,6 +8719,10 @@ static void manager_shutdown(void)
 	ami_tls_cfg.pvtfile = NULL;
 	ast_free(ami_tls_cfg.cipher);
 	ami_tls_cfg.cipher = NULL;
+	ast_free(ami_tls_cfg.cafile);
+	ami_tls_cfg.cafile = NULL;
+	ast_free(ami_tls_cfg.capath);
+	ami_tls_cfg.capath = NULL;
 
 	ao2_global_obj_release(mgr_sessions);
 
@@ -8817,6 +8823,10 @@ static void manager_set_defaults(void)
 	ami_tls_cfg.pvtfile = ast_strdup("");
 	ast_free(ami_tls_cfg.cipher);
 	ami_tls_cfg.cipher = ast_strdup("");
+	ast_free(ami_tls_cfg.cafile);
+	ami_tls_cfg.cafile = ast_strdup("");
+	ast_free(ami_tls_cfg.capath);
+	ami_tls_cfg.capath = ast_strdup("");
 }
 
 static int __init_manager(int reload, int by_external_config)

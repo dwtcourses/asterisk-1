@@ -286,15 +286,16 @@ static struct internal_state *find_internal_state_by_transport(const struct ast_
 static struct ast_sip_transport_state *find_state_by_transport(const struct ast_sip_transport *transport)
 {
 	struct internal_state *state;
+	struct ast_sip_transport_state *trans_state;
 
 	state = find_internal_state_by_transport(transport);
 	if (!state) {
 		return NULL;
 	}
-	ao2_bump(state->state);
-	ao2_cleanup(state);
+	trans_state = ao2_bump(state->state);
+	ao2_ref(state, -1);
 
-	return state->state;
+	return trans_state;
 }
 
 static int remove_temporary_state(void)
@@ -1297,22 +1298,22 @@ static struct ast_sip_cli_formatter_entry *cli_formatter;
 
 struct ast_sip_transport_state *ast_sip_get_transport_state(const char *transport_id)
 {
-	struct internal_state * state = NULL;
+	struct internal_state *state = NULL;
+	struct ast_sip_transport_state *trans_state;
 
 	if (!transport_states) {
 		return NULL;
 	}
 
 	state = ao2_find(transport_states, transport_id, OBJ_SEARCH_KEY);
-	if (!state || !state->state) {
-		ao2_cleanup(state);
+	if (!state) {
 		return NULL;
 	}
 
-	ao2_ref(state->state, +1);
+	trans_state = ao2_bump(state->state);
 	ao2_ref(state, -1);
 
-	return state->state;
+	return trans_state;
 }
 
 static int populate_transport_states(void *obj, void *arg, int flags)
@@ -1347,7 +1348,7 @@ int ast_sip_initialize_sorcery_transport(void)
 	transport_states = ao2_container_alloc(DEFAULT_STATE_BUCKETS, internal_state_hash, internal_state_cmp);
 	if (!transport_states) {
 		ast_log(LOG_ERROR, "Unable to allocate transport states container\n");
-		return AST_MODULE_LOAD_FAILURE;
+		return -1;
 	}
 
 	ast_sorcery_apply_default(sorcery, "transport", "config", "pjsip.conf,criteria=type=transport");

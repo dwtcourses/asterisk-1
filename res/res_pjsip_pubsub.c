@@ -1108,7 +1108,9 @@ static void remove_subscription(struct sip_subscription_tree *obj)
 static void destroy_subscription(struct ast_sip_subscription *sub)
 {
 	ast_debug(3, "Destroying SIP subscription from '%s->%s'\n",
-		ast_sorcery_object_get_id(sub->tree->endpoint), sub->resource);
+		sub->tree->endpoint ? ast_sorcery_object_get_id(sub->tree->endpoint) : "Unknown",
+		sub->resource);
+
 	ast_free(sub->body_text);
 
 	AST_VECTOR_FREE(&sub->children);
@@ -1265,13 +1267,13 @@ static void subscription_tree_destructor(void *obj)
 		sub_tree->endpoint ? ast_sorcery_object_get_id(sub_tree->endpoint) : "Unknown",
 		sub_tree->root ? sub_tree->root->resource : "Unknown");
 
-	ao2_cleanup(sub_tree->endpoint);
-
 	destroy_subscriptions(sub_tree->root);
 
 	if (sub_tree->dlg) {
 		ast_sip_push_task_synchronous(sub_tree->serializer, subscription_unreference_dialog, sub_tree);
 	}
+
+	ao2_cleanup(sub_tree->endpoint);
 
 	ast_taskprocessor_unreference(sub_tree->serializer);
 	ast_module_unref(ast_module_info->self);
@@ -5285,13 +5287,13 @@ static int load_module(void)
 
 	if (!(sched = ast_sched_context_create())) {
 		ast_log(LOG_ERROR, "Could not create scheduler for publication expiration\n");
-		return AST_MODULE_LOAD_FAILURE;
+		return AST_MODULE_LOAD_DECLINE;
 	}
 
 	if (ast_sched_start_thread(sched)) {
 		ast_log(LOG_ERROR, "Could not start scheduler thread for publication expiration\n");
 		ast_sched_context_destroy(sched);
-		return AST_MODULE_LOAD_FAILURE;
+		return AST_MODULE_LOAD_DECLINE;
 	}
 
 	pjsip_endpt_add_capability(ast_sip_get_pjsip_endpoint(), NULL, PJSIP_H_ALLOW, NULL, 1, &str_PUBLISH);
@@ -5299,7 +5301,7 @@ static int load_module(void)
 	if (ast_sip_register_service(&pubsub_module)) {
 		ast_log(LOG_ERROR, "Could not register pubsub service\n");
 		ast_sched_context_destroy(sched);
-		return AST_MODULE_LOAD_FAILURE;
+		return AST_MODULE_LOAD_DECLINE;
 	}
 
 	ast_sorcery_apply_config(sorcery, "res_pjsip_pubsub");
@@ -5309,7 +5311,7 @@ static int load_module(void)
 		ast_log(LOG_ERROR, "Could not register subscription persistence object support\n");
 		ast_sip_unregister_service(&pubsub_module);
 		ast_sched_context_destroy(sched);
-		return AST_MODULE_LOAD_FAILURE;
+		return AST_MODULE_LOAD_DECLINE;
 	}
 	ast_sorcery_object_field_register(sorcery, "subscription_persistence", "packet", "", OPT_CHAR_ARRAY_T, 0,
 		CHARFLDSET(struct subscription_persistence, packet));
@@ -5337,7 +5339,7 @@ static int load_module(void)
 	if (apply_list_configuration(sorcery)) {
 		ast_sip_unregister_service(&pubsub_module);
 		ast_sched_context_destroy(sched);
-		return AST_MODULE_LOAD_FAILURE;
+		return AST_MODULE_LOAD_DECLINE;
 	}
 
 	ast_sorcery_apply_default(sorcery, "inbound-publication", "config", "pjsip.conf,criteria=type=inbound-publication");
@@ -5346,7 +5348,7 @@ static int load_module(void)
 		ast_log(LOG_ERROR, "Could not register subscription persistence object support\n");
 		ast_sip_unregister_service(&pubsub_module);
 		ast_sched_context_destroy(sched);
-		return AST_MODULE_LOAD_FAILURE;
+		return AST_MODULE_LOAD_DECLINE;
 	}
 	ast_sorcery_object_field_register(sorcery, "inbound-publication", "type", "", OPT_NOOP_T, 0, 0);
 	ast_sorcery_object_field_register_custom(sorcery, "inbound-publication", "endpoint", "",

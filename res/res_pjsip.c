@@ -193,11 +193,18 @@
 					<description>
 						<para>Method used when updating connected line information.</para>
 						<enumlist>
-							<enum name="invite" />
+							<enum name="invite">
+							<para>When set to <literal>invite</literal>, check the remote's Allow header and
+							if UPDATE is allowed, send UPDATE instead of INVITE to avoid SDP
+							renegotiation.  If UPDATE is not Allowed, send INVITE.</para>
+							</enum>
 							<enum name="reinvite">
 								<para>Alias for the <literal>invite</literal> value.</para>
 							</enum>
-							<enum name="update" />
+							<enum name="update">
+							<para>If set to <literal>update</literal>, send UPDATE regardless of what the remote
+							Allows. </para>
+							</enum>
 						</enumlist>
 					</description>
 				</configOption>
@@ -228,6 +235,9 @@
 							</enum>
 							<enum name="auto">
 								<para>DTMF is sent as RFC 4733 if the other side supports it or as INBAND if not.</para>
+							</enum>
+							<enum name="auto_info">
+								<para>DTMF is sent as RFC 4733 if the other side supports it or as SIP INFO if not.</para>
 							</enum>
 						</enumlist>
 					</description>
@@ -955,6 +965,21 @@
 						on the same port. This shifts the demultiplexing logic to the application rather than
 						the transport layer. This option is useful when interoperating with WebRTC endpoints
 						since they mandate this option's use.
+					</para></description>
+				</configOption>
+				<configOption name="refer_blind_progress" default="yes">
+					<synopsis>Whether to notifies all the progress details on blind transfer</synopsis>
+					<description><para>
+						Some SIP phones (Mitel/Aastra, Snom) expect a sip/frag "200 OK"
+						after REFER has been accepted. If set to <literal>no</literal> then asterisk
+						will not send the progress details, but immediately will send "200 OK".
+					</para></description>
+				</configOption>
+				<configOption name="notify_early_inuse_ringing" default="no">
+					<synopsis>Whether to notifies dialog-info 'early' on InUse&amp;Ringing state</synopsis>
+					<description><para>
+						Control whether dialog-info subscriptions get 'early' state
+						on Ringing when already INUSE.
 					</para></description>
 				</configOption>
 			</configObject>
@@ -3030,7 +3055,7 @@ pjsip_dialog *ast_sip_create_dialog_uac(const struct ast_sip_endpoint *endpoint,
 	if (res != PJ_SUCCESS) {
 		if (res == PJSIP_EINVALIDURI) {
 			ast_log(LOG_ERROR,
-				"Endpoint '%s': Could not create dialog to invalid URI '%s'.  Is endpoint registered?\n",
+				"Endpoint '%s': Could not create dialog to invalid URI '%s'.  Is endpoint registered and reachable?\n",
 				ast_sorcery_object_get_id(endpoint), uri);
 		}
 		return NULL;
@@ -4380,11 +4405,15 @@ void ast_sip_modify_id_header(pj_pool_t *pool, pjsip_fromto_hdr *id_hdr, const s
 	id_uri = pjsip_uri_get_uri(id_name_addr->uri);
 
 	if (id->name.valid) {
-		int name_buf_len = strlen(id->name.str) * 2 + 1;
-		char *name_buf = ast_alloca(name_buf_len);
+		if (!ast_strlen_zero(id->name.str)) {
+			int name_buf_len = strlen(id->name.str) * 2 + 1;
+			char *name_buf = ast_alloca(name_buf_len);
 
-		ast_escape_quoted(id->name.str, name_buf, name_buf_len);
-		pj_strdup2(pool, &id_name_addr->display, name_buf);
+			ast_escape_quoted(id->name.str, name_buf, name_buf_len);
+			pj_strdup2(pool, &id_name_addr->display, name_buf);
+		} else {
+			pj_strdup2(pool, &id_name_addr->display, NULL);
+		}
 	}
 
 	if (id->number.valid) {

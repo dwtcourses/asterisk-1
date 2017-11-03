@@ -1098,6 +1098,16 @@ if test "${ac_cv_have_variable_fdset}x" = "0x"; then
 		AC_DEFINE([CONFIGURE_RAN_AS_ROOT], 1, [Some configure tests will unexpectedly fail if configure is run by a non-root user.  These may be able to be tested at runtime.]))
 fi
 
+AC_MSG_CHECKING([if we have usable eventfd support])
+AC_RUN_IFELSE(
+  [AC_LANG_PROGRAM([#include <sys/eventfd.h>],
+      [return eventfd(0, EFD_NONBLOCK | EFD_SEMAPHORE) == -1;])],
+  AC_MSG_RESULT(yes)
+  AC_DEFINE([HAVE_EVENTFD], 1, [Define to 1 if your system supports eventfd and the EFD_NONBLOCK and EFD_SEMAPHORE flags.]),
+  AC_MSG_RESULT(no),
+  AC_MSG_RESULT(cross-compile)
+)
+
 AST_GCC_ATTRIBUTE(pure)
 AST_GCC_ATTRIBUTE(malloc)
 AST_GCC_ATTRIBUTE(const)
@@ -1323,6 +1333,18 @@ AC_LINK_IFELSE(
 	),
 	AC_MSG_RESULT(no)
 )
+
+AC_MSG_CHECKING(for BIND_8_COMPAT required)
+AC_COMPILE_IFELSE([AC_LANG_PROGRAM(
+[[
+#undef BIND_8_COMPAT
+#include <arpa/nameser.h>
+]],
+[[int x = NXDOMAIN]])],
+AC_MSG_RESULT(no),
+AC_MSG_RESULT(yes)
+[BIND8_CFLAGS=-DBIND_8_COMPAT])
+AC_SUBST(BIND8_CFLAGS)
 
 AST_C_DEFINE_CHECK([GLOB_NOMAGIC], [GLOB_NOMAGIC], [glob.h])
 
@@ -2416,46 +2438,59 @@ then
         AST_C_DEFINE_CHECK([SSL_OP_NO_TLSV1_2], [SSL_OP_NO_TLSv1_2], [openssl/ssl.h])
 fi
 
-AST_EXT_LIB_CHECK([SRTP], [srtp], [srtp_init], [srtp/srtp.h])
+AST_EXT_LIB_CHECK([SRTP], [srtp2], [srtp_init], [srtp2/srtp.h], [], [], [2])
+AST_EXT_LIB_CHECK_SHARED([SRTP], [srtp2], [srtp_init], [srtp2/srtp.h], [], [], [], [
+    AC_MSG_WARN([***])
+    AC_MSG_WARN([*** libsrtp2 could not be linked as a shared object.])
+    AC_MSG_WARN([*** Try compiling libsrtp2 manually. Configure libsrtp2])
+    AC_MSG_WARN([*** with ./configure --prefix=/usr replacing /usr with])
+    AC_MSG_WARN([*** the prefix of your choice, and then make with])
+    AC_MSG_WARN([*** 'make libsrtp2.so'])
+    AC_MSG_WARN([***])
+    AC_MSG_WARN([*** After re-installing libsrtp2, re-run the Asterisk])
+    AC_MSG_WARN([*** configure script.])
+    AC_MSG_WARN([***])
+    AC_MSG_WARN([*** If you do not need SRTP support re-run configure])
+    AC_MSG_WARN([*** with the --without-srtp option.])
+    exit 1
+])
 
-if test "$PBX_SRTP" = "1";
+if test "x$PBX_SRTP" = x1;
 then
-    saved_libs="${LIBS}"
-    saved_ldflags="${LDFLAGS}"
-    saved_cflags="${CFLAGS}"
-    LIBS="${LIBS} ${SRTP_LIB}"
-    LDFLAGS="${LDFLAGS} -shared -fPIC"
-    CFLAGS="${CFLAGS} ${SRTP_INCLUDE}"
-    AC_MSG_CHECKING(for the ability of -lsrtp to be linked in a shared object)
-    AC_LINK_IFELSE(
-    [
-        AC_LANG_PROGRAM(
-            [#include <srtp/srtp.h>],
-            [srtp_init();]
-        )
-    ],
-    [ AC_MSG_RESULT(yes) ],
-    [
-        AC_MSG_RESULT(no)
-        AC_MSG_WARN(***)
-        AC_MSG_WARN(*** libsrtp could not be linked as a shared object.)
-        AC_MSG_WARN(*** Try compiling libsrtp manually. Configure libsrtp)
-        AC_MSG_WARN(*** with ./configure CFLAGS=-fPIC --prefix=/usr)
-        AC_MSG_WARN(*** replacing /usr with the prefix of your choice.)
-        AC_MSG_WARN(*** After re-installing libsrtp, re-run the Asterisk)
-        AC_MSG_WARN(*** configure script.)
-        AC_MSG_WARN(***)
-        AC_MSG_WARN(*** If you do not need SRTP support re-run configure)
-        AC_MSG_WARN(*** with the --without-srtp option.)
-        exit 1
-    ]
-    )
-    LIBS="${saved_libs}"
-    LDFLAGS="${saved_ldflags}"
-    CFLAGS="${saved_cflags}"
+    AST_EXT_LIB_CHECK([SRTP_SHUTDOWN], [srtp2], [srtp_shutdown], [srtp2/srtp.h])
+
+    # libsrtp2 removed support for PRNG, so we require OpenSSL
+    if test "x$PBX_OPENSSL" != x1;
+    then
+        AC_MSG_WARN([***])
+        AC_MSG_WARN([*** OpenSSL required when using libsrtp2, checking for libsrtp instead.])
+        AC_MSG_WARN([***])
+        PBX_SRTP=0
+    fi
 fi
 
-AST_EXT_LIB_CHECK([SRTP_SHUTDOWN], [srtp], [srtp_shutdown], [srtp/srtp.h])
+if test "x$PBX_SRTP" != x1;
+then
+    AST_EXT_LIB_CHECK([SRTP], [srtp], [srtp_init], [srtp/srtp.h], [], [], [1])
+    AST_EXT_LIB_CHECK_SHARED([SRTP], [srtp], [srtp_init], [srtp/srtp.h], [], [], [], [
+        AC_MSG_WARN([***])
+        AC_MSG_WARN([*** libsrtp could not be linked as a shared object.])
+        AC_MSG_WARN([*** Try compiling libsrtp manually. Configure libsrtp])
+        AC_MSG_WARN([*** with ./configure CFLAGS=-fPIC --prefix=/usr])
+        AC_MSG_WARN([*** replacing /usr with the prefix of your choice.])
+        AC_MSG_WARN([*** After re-installing libsrtp, re-run the Asterisk])
+        AC_MSG_WARN([*** configure script.])
+        AC_MSG_WARN([***])
+        AC_MSG_WARN([*** If you do not need SRTP support re-run configure])
+        AC_MSG_WARN([*** with the --without-srtp option.])
+        exit 1
+    ])
+
+    if test "x$PBX_SRTP" = x1;
+    then
+        AST_EXT_LIB_CHECK([SRTP_SHUTDOWN], [srtp], [srtp_shutdown], [srtp/srtp.h])
+    fi
+fi
 
 for ver in 2.0 2.2 2.4 2.6; do
 	AST_PKG_CONFIG_CHECK([GMIME], gmime-$ver)
