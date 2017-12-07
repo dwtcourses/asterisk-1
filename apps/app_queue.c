@@ -4251,7 +4251,14 @@ static int member_status_available(int status)
  */
 static int can_ring_entry(struct queue_ent *qe, struct callattempt *call)
 {
-	int wrapuptime = get_wrapuptime(call->lastqueue, call->member);
+
+	 int wrapuptime = 0;
+
+	 if (call->lastqueue){
+		 wrapuptime = get_wrapuptime(call->lastqueue, call->member);
+	 } else if(qe->parent){
+		 wrapuptime = get_wrapuptime(qe->parent, call->member);
+	 }
 
 	if (call->member->paused) {
 		ast_debug(1, "%s paused, can't receive call\n", call->interface);
@@ -4265,7 +4272,7 @@ static int can_ring_entry(struct queue_ent *qe, struct callattempt *call)
 
 
 	if ((call->lastqueue && wrapuptime && (time(NULL) - call->lastcall < wrapuptime))
-		|| (!call->lastqueue && get_wrapuptime(qe->parent, call->member) && (time(NULL) - call->lastcall < get_wrapuptime(qe->parent, call->member)))) {
+		|| (!call->lastqueue && wrapuptime && (time(NULL) - call->lastcall < wrapuptime))) {
 		ast_debug(1, "Wrapuptime not yet expired on queue %s for %s\n",
 			(call->lastqueue ? call->lastqueue->name : qe->parent->name),
 			call->interface);
