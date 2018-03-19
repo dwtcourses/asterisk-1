@@ -25,6 +25,12 @@
  * \arg Config in \ref Config_qu queues.conf
  *
  * \par Development notes
+ * \note 2015-08-05: Lua scripting callbacks added by:
+ *             pascom Netzwerktechnik (www.pascom.net)
+ *             Thomas weber <thomas.weber@pascom.net>
+ *
+ *             Metrics calculation can be augmented by a lua script.
+ *
  * \note 2004-11-25: Persistent Dynamic Members added by:
  *             NetNation Communications (www.netnation.com)
  *             Kevin Lindsay <kevinl@netnation.com>
@@ -57,6 +63,7 @@
  */
 
 /*** MODULEINFO
+	<depend>lua</depend>
 	<use type="module">res_monitor</use>
 	<support_level>core</support_level>
  ***/
@@ -99,6 +106,16 @@ ASTERISK_FILE_VERSION(__FILE__, "$Revision$")
 #include "asterisk/callerid.h"
 #include "asterisk/cel.h"
 #include "asterisk/data.h"
+#include "asterisk/paths.h"
+
+#include "lua.h"
+#include <lauxlib.h>
+#include <lualib.h>
+
+// for older lua versions...
+#ifndef LUA_OK
+  #define LUA_OK 0
+#endif
 
 /* Define, to debug reference counts on queues, without debugging reference counts on queue members */
 /* #define REF_DEBUG_ONLY_QUEUES */
@@ -234,6 +251,9 @@ ASTERISK_FILE_VERSION(__FILE__, "$Revision$")
 			</parameter>
 			<parameter name="rule">
 				<para>Will cause the queue's defaultrule to be overridden by the rule specified.</para>
+			</parameter>
+			<parameter name="luascript">
+				<para>Optional lua script to define a custom strategy.</para>
 			</parameter>
 			<parameter name="position">
 				<para>Attempt to enter the caller into the queue at the numerical position specified. <literal>1</literal>
@@ -1213,6 +1233,8 @@ struct call_queue {
 		AST_STRING_FIELD(membergosub);
 		/*! Default rule to use if none specified in call to Queue() */
 		AST_STRING_FIELD(defaultrule);
+		/*! lua script to customize strategies */
+		AST_STRING_FIELD(luascript);
 		/*! Sound file: "Your call is now first in line" (def. queue-youarenext) */
 		AST_STRING_FIELD(sound_next);
 		/*! Sound file: "There are currently" (def. queue-thereare) */
@@ -1297,6 +1319,7 @@ struct call_queue {
 	struct queue_ent *head;             /*!< Head of the list of callers */
 	AST_LIST_ENTRY(call_queue) list;    /*!< Next call queue */
 	AST_LIST_HEAD_NOLOCK(, penalty_rule) rules; /*!< The list of penalty rules to invoke */
+    lua_State *luaState;                /*!< Lua Interpreter State for this queue */
 };
 
 struct rule_list {
@@ -1314,6 +1337,7 @@ static struct member *interface_exists(struct call_queue *q, const char *interfa
 static int set_member_paused(const char *queuename, const char *interface, const char *reason, int paused);
 
 static void queue_transfer_fixup(void *data, struct ast_channel *old_chan, struct ast_channel *new_chan);
+static int is_member_available(struct call_queue *q, struct member *mem);
 
 static struct member *find_member_by_queuename_and_interface(const char *queuename, const char *interface);
 /*! \brief sets the QUEUESTATUS channel variable */
@@ -1708,6 +1732,270 @@ static int update_status(struct call_queue *q, struct member *m, const int statu
 	return 0;
 }
 
+static int lua_ast_log(lua_State *L) {
+  const int level = (int)lua_tonumber(L,1);
+  const char* msg = lua_tostring(L,2);
+
+  switch(level) {
+      case 0:
+        ast_log(LOG_DEBUG, msg);
+        break;
+      case 5:
+        ast_log(LOG_VERBOSE, msg);
+        break;
+      case 2:
+        ast_log(LOG_NOTICE, msg);
+        break;
+      case 3:
+        ast_log(LOG_WARNING, msg);
+        break;
+      case 4:
+        ast_log(LOG_ERROR, msg);
+        break;
+      default:
+        ast_log(LOG_WARNING, msg);
+  }
+  return LUA_OK;
+}
+
+static int lua_ast_verbose(lua_State *L) {
+  const char* msg = lua_tostring(L,1);
+  ast_verbose("    --- %s\n", msg);
+  return LUA_OK;
+}
+
+static int lua_ast_queue_log(lua_State *L) {
+  const char* queuename = lua_tostring(L,1);
+  const char* callid = lua_tostring(L,2);
+  const char* agent = lua_tostring(L,3);
+  const char* event = lua_tostring(L,4);
+  const char* fmt = lua_tostring(L,5);
+  ast_queue_log(queuename,callid,agent,event,fmt);
+  return LUA_OK;
+}
+
+static void lua_unload(struct call_queue *q) {
+  lua_State *L = q->luaState;
+  if (L != 0) {
+    // teardown old lua script
+    // Check if a cleanup callback is defined
+    lua_getglobal(L,"cleanup");
+    if( lua_isfunction(L,lua_gettop(L)) ) {
+      // Call cleanup
+      if (lua_pcall(L, 0, 0, 0) != LUA_OK) {
+          ast_log(LOG_WARNING, "Could not cleanup lua script for queue '%s': %s\n", q->name,lua_tostring(L, -1));
+      }
+    } else {
+      lua_pop(L, 1);
+    }
+    lua_close(L);
+    q->luaState=0;
+  }
+}
+
+
+static void lua_push_qmember(lua_State *L,struct call_queue *q, struct member *mem) {
+	ao2_lock(mem);
+    lua_newtable(L);
+    lua_pushstring(L,mem->interface);
+    lua_setfield(L,-2,"interface");
+    lua_pushstring(L,mem->membername);
+    lua_setfield(L,-2,"membername");
+    lua_pushnumber(L,mem->queuepos);
+    lua_setfield(L,-2,"queuepos");
+    lua_pushnumber(L,mem->penalty);
+    lua_setfield(L,-2,"penalty");
+    lua_pushnumber(L,mem->paused);
+    lua_setfield(L,-2,"paused");
+    lua_pushnumber(L,mem->calls);
+    lua_setfield(L,-2,"calls");
+    lua_pushnumber(L,mem->dynamic);
+    lua_setfield(L,-2,"dynamic");
+    lua_pushnumber(L,mem->status);
+    lua_setfield(L,-2,"status");
+    lua_pushnumber(L,is_member_available(q,mem));
+    lua_setfield(L,-2,"available");
+    lua_pushnumber(L, mem->call_pending);
+    lua_setfield(L,-2,"pending");
+	ao2_unlock(mem);
+}
+
+static void lua_push_channel_vars(lua_State *L, struct ast_channel *chan) {
+    // k/v table with channel variables
+    lua_newtable(L);
+    struct ast_var_t *variables;
+    ast_channel_lock(chan);
+	  AST_LIST_TRAVERSE(ast_channel_varshead(chan), variables, entries) {
+      lua_pushstring(L,ast_var_value(variables));
+      lua_setfield(L,-2,ast_var_name(variables));
+    }
+    ast_channel_unlock(chan);
+}
+
+static void lua_push_qentry(lua_State *L,struct queue_ent *qe)  {
+    // k/v data for current queue head entry
+    lua_newtable(L);
+    ast_channel_lock(qe->chan);
+    lua_pushstring(L,ast_channel_context(qe->chan));
+    lua_setfield(L,-2,"context");
+    lua_pushstring(L,qe->digits);
+    lua_setfield(L,-2,"digits");
+    lua_pushnumber(L,qe->prio);
+    lua_setfield(L,-2,"prio");
+    lua_pushstring(L,ast_channel_name(qe->chan));
+    lua_setfield(L,-2,"channel");
+    lua_pushstring(L,ast_channel_uniqueid(qe->chan));
+    lua_setfield(L,-2,"uniqueid");
+    lua_pushstring(L,qe->parent->name);
+    lua_setfield(L,-2,"queuename");
+    lua_pushnumber(L,qe->pending);
+    lua_setfield(L,-2,"pending");
+    lua_pushnumber(L,qe->pos);
+    lua_setfield(L,-2,"pos");
+    lua_pushnumber(L,qe->start);
+    lua_setfield(L,-2,"start");
+    lua_pushnumber(L,qe->expire);
+    lua_setfield(L,-2,"expire");
+    lua_pushstring(L,"variables");
+    lua_push_channel_vars(L, qe->chan);
+    lua_settable( L, -3 );
+	ast_channel_unlock(qe->chan);
+}
+
+static void lua_set_queue(lua_State *L, struct call_queue *q) {
+     lua_pushstring(L, "queue");
+     lua_pushlightuserdata(L, q);
+     /* registry["queue"] = q */
+     lua_settable(L, LUA_REGISTRYINDEX);
+}
+
+static struct call_queue *lua_get_queue(lua_State *L) {
+    lua_pushstring(L, "queue");
+    lua_gettable(L, LUA_REGISTRYINDEX);
+    if (lua_islightuserdata(L, -1)) {
+        /* return registry["queue"] */
+        return lua_touserdata(L, -1);
+    } else {
+        return 0;
+    }
+}
+
+static int lua_get_member(lua_State *L) {
+    const char* interface = lua_tostring(L,1);
+
+    struct call_queue *q;
+    struct member *mem;
+
+	q = lua_get_queue(L);
+	if (q) {
+        if ((mem = interface_exists(q, interface))) {
+            lua_push_qmember(L,q,mem);
+            return 1;
+        }
+	}
+	return 0;
+
+}
+
+static int lua_get_members(lua_State *L) {
+
+    struct call_queue *q;
+    struct member *m;
+    struct ao2_iterator mem_iter;
+    int i=0;
+
+	q = lua_get_queue(L);
+	if (q) {
+        lua_newtable(L);
+        mem_iter = ao2_iterator_init(q->members, 0);
+        while ((m = ao2_iterator_next(&mem_iter))) {
+            lua_pushnumber(L,++i);
+            lua_push_qmember(L,q,m);
+            lua_settable( L, -3 );
+            ao2_ref(m, -1);
+        }
+        ao2_iterator_destroy(&mem_iter);
+        return 1;
+	}
+	return 0;
+}
+
+static int lua_get_entries(lua_State *L) {
+
+    struct call_queue *q;
+    struct queue_ent *qe;
+    int i=0;
+
+	q = lua_get_queue(L);
+	if (q && q->head) {
+        lua_newtable(L);
+        for (qe = q->head; qe; qe = qe->next) {
+            lua_pushnumber(L,++i);
+            lua_push_qentry(L,qe);
+            lua_settable( L, -3 );
+        }
+        return 1;
+    }
+    return 0;
+}
+
+static void lua_reload(struct ast_config *cfg, struct call_queue *q) {
+	  const char *tmpvar;
+    char scriptpath[PATH_MAX];
+    lua_State *L=0;
+    // Cleanup previous state (if any)
+    lua_unload(q);
+
+    if ((tmpvar = ast_variable_retrieve(cfg, q->name, "luascript"))) {
+
+      L = luaL_newstate();                        /* Create Lua state variable */
+
+      luaL_openlibs(L);                           /* Load Lua libraries */
+
+      // Register some functions
+      lua_register(L,"ast_log", lua_ast_log);
+      lua_register(L,"ast_verbose", lua_ast_verbose);
+      lua_register(L,"ast_queue_log", lua_ast_queue_log);
+      lua_register(L,"get_member", lua_get_member);
+      lua_register(L,"get_members", lua_get_members);
+      lua_register(L,"get_entries", lua_get_entries);
+
+      // TODO Maybe add some global variables for the current queue
+
+
+      /* Load but don't run the Lua script */
+      sprintf(scriptpath,"%s/%s", ast_config_AST_CONFIG_DIR,tmpvar);
+      if (luaL_loadfile(L, scriptpath) == LUA_OK) {
+        /* Run the loaded Lua script */
+        if (lua_pcall(L, 0, 0, 0) != LUA_OK) {
+				  ast_log(LOG_WARNING, "Could not run lua script '%s' for queue '%s': %s\n",tmpvar, q->name,lua_tostring(L, -1));
+        }
+        //ast_log(LOG_NOTICE, "Loaded script '%s' for queue '%s'\n",tmpvar, q->name);
+      } else {
+        ast_log(LOG_WARNING, "Could not load lua script '%s' for queue '%s': %s\n",tmpvar, q->name,lua_tostring(L,-1));
+      }
+
+      // Check if a init callback is defined
+      lua_getglobal(L,"init");
+      if( lua_isfunction(L,lua_gettop(L)) ) {
+        lua_set_queue(L,q);
+        // Call init with a table containing some queue details
+        lua_newtable(L);
+        lua_pushstring(L,q->name);
+        lua_setfield(L,-2,"name");
+        if (lua_pcall(L, 1, 0, 0) != LUA_OK) {
+				    ast_log(LOG_WARNING, "Could not init lua script '%s' for queue '%s': %s\n",tmpvar, q->name,lua_tostring(L, -1));
+        }
+      } else {
+        lua_pop(L, 1);
+      }
+      // Attach lua state to this queue
+      q->luaState=L;
+
+    }
+
+}
+
 /*!
  * \internal \brief Determine if a queue member is available
  * \retval 1 if the member is available
@@ -2040,6 +2328,8 @@ static void init_queue(struct call_queue *q)
 	q->autopause = QUEUE_AUTOPAUSE_OFF;
 	q->timeoutpriority = TIMEOUT_PRIORITY_APP;
 	q->autopausedelay = 0;
+  // FIXME: problem with reload/init
+  //q->luaState = 0;
 	if (!q->members) {
 		if (q->strategy == QUEUE_STRATEGY_LINEAR || q->strategy == QUEUE_STRATEGY_RRORDERED) {
 			/* linear strategy depends on order, so we have to place all members in a single bucket */
@@ -2439,6 +2729,8 @@ static void queue_set_param(struct call_queue *q, const char *param, const char 
 		q->timeoutrestart = ast_true(val);
 	} else if (!strcasecmp(param, "defaultrule")) {
 		ast_string_field_set(q, defaultrule, val);
+	} else if (!strcasecmp(param, "luascript")) {
+		ast_string_field_set(q, luascript, val);
 	} else if (!strcasecmp(param, "timeoutpriority")) {
 		if (!strcasecmp(val, "conf")) {
 			q->timeoutpriority = TIMEOUT_PRIORITY_CONF;
@@ -2597,6 +2889,8 @@ static void destroy_queue(void *obj)
 {
 	struct call_queue *q = obj;
 	int i;
+
+  lua_unload(q);
 
 	free_members(q, 1);
 	ast_string_field_free_memory(q);
@@ -2971,6 +3265,26 @@ static int join_queue(char *queuename, struct queue_ent *qe, enum queue_result *
 		if (q->count == 1) {
 			ast_devstate_changed(AST_DEVICE_RINGING, AST_DEVSTATE_CACHABLE, "Queue:%s", q->name);
 		}
+
+
+        lua_State *L= qe->parent->luaState;
+        if (L) {
+          lua_getglobal(L,"enter_queue");
+          if( lua_isfunction(L,lua_gettop(L)) ) {
+            lua_set_queue(L,qe->parent);
+            // arg 1: k/v data for added entry
+            lua_push_qentry(L,qe);
+            // arg 2: k/v table with channels vars
+            lua_push_channel_vars(L,qe->chan);
+
+            //call script
+            if (lua_pcall(L, 2, 0, 0) != LUA_OK) {
+              ast_log(LOG_WARNING, "Could not call lua enter_queue for queue '%s': %s\n", qe->parent->name,lua_tostring(L, -1));
+            }
+          } else {
+            lua_pop(L, 1);
+          }
+        }
 
 		res = 0;
 		/*** DOCUMENTATION
@@ -4660,7 +4974,41 @@ static int is_our_turn(struct queue_ent *qe)
 		ch = ch->next;
 	}
 
+	lua_State *L= qe->parent->luaState;
+	int lua_result = -1;
+    if (L) {
+      lua_getglobal(L,"is_our_turn");
+      if( lua_isfunction(L,lua_gettop(L)) ) {
+        lua_set_queue(L,qe->parent);
+        // arg 1: k/v data for currently to-be-evaluated entry
+        lua_push_qentry(L,qe);
+
+        //call script, get back result
+        if (lua_pcall(L, 1, 1, 0) == LUA_OK) {
+          lua_result=lua_tonumber(L, -1);
+          lua_pop(L, 1);
+        } else {
+          ast_log(LOG_WARNING, "Could not get is_our_turn result for queue '%s': %s\n", qe->parent->name,lua_tostring(L, -1));
+        }
+      } else {
+        lua_pop(L, 1);
+      }
+    }
+
+    // 2 means: force a timeout on the entry
+	if (lua_result == 2) {
+		ast_debug(1, "Force expire on (%s).\n", ast_channel_name(qe->chan));
+	    // expire NOW
+	    qe->expire = 1;
+	    //propagate 'it is not our turn'.
+	    lua_result=0;
+	}
+
 	ao2_unlock(qe->parent);
+
+	// Skip the default algorithm if we got a valid result from the lua callback
+    if (lua_result == 1 || lua_result == 0) return lua_result;
+
 	/* If the queue entry is within avl [the number of available members] calls from the top ...
 	 * Autofill and position check added to support autofill=no (as only calls
 	 * from the front of the queue are valid when autofill is disabled)
@@ -4850,6 +5198,42 @@ static int calc_metric(struct call_queue *q, struct member *mem, int pos, struct
 	/* disregarding penalty on too few members? */
 	int membercount = ao2_container_count(q->members);
 	unsigned char usepenalty = (membercount <= q->penaltymemberslimit) ? 0 : 1;
+
+  lua_State *L= q->luaState;
+  if (L) {
+    lua_getglobal(L,"calc_metric");
+    if( lua_isfunction(L,lua_gettop(L)) ) {
+      lua_set_queue(L,qe->parent);
+      // arg 1: k/v data for current to-be-calculated agent
+      lua_push_qmember(L,q,mem);
+      // arg 2: k/v data for current queue head entry 
+      lua_push_qentry(L,qe);
+      // arg 3: k/v table with channels vars
+      lua_push_channel_vars(L,qe->chan);
+
+      //call script, get back metric
+      if (lua_pcall(L, 3, 1, 0) == LUA_OK) {
+        int result=lua_tonumber(L, -1);
+        lua_pop(L, 1);
+        if (result<0) {
+          // Skip this agent
+          return -1;
+        } else if (result==0) {
+          // Result is zero, that means: "consider this agent, use standard asterisk strategy"
+
+        } else {
+          // We got some result, so skip the built in strategies
+          tmp->metric=result;
+          return 0;
+        }
+      } else {
+        ast_log(LOG_WARNING, "Could not calculate script metrics for queue '%s': %s\n", q->name,lua_tostring(L, -1));
+        // Go on and use a built in strategy instead of the script
+      }
+    } else {
+      lua_pop(L, 1);
+    }
+  }
 
 	if (usepenalty) {
 		if ((qe->max_penalty && (mem->penalty > qe->max_penalty)) ||
@@ -5955,6 +6339,8 @@ static int try_calling(struct queue_ent *qe, const struct ast_flags opts, char *
 		ao2_ref(member, -1);
 	}
 out:
+  // FIXME: cleanup lua stack, could be corrupted
+  //if (L) lua_settop(L,0);
 	hangupcalls(outgoing, NULL, qe->cancel_answered_elsewhere);
 
 	return res;
@@ -7081,6 +7467,7 @@ check_turns:
 
 	makeannouncement = 0;
 
+
 	for (;;) {
 		/* This is the wait loop for the head caller*/
 		/* To exit, they may get their call answered; */
@@ -7997,6 +8384,9 @@ static void reload_single_queue(struct ast_config *cfg, struct ast_flags *mask, 
 		} else {
 			q->strategy = QUEUE_STRATEGY_RINGALL;
 		}
+
+        lua_reload(cfg,q);
+
 		init_queue(q);
 	}
 	if (member_reload) {
@@ -8068,6 +8458,13 @@ static int mark_dead_and_unfound(void *obj, void *arg, int flags)
 static int kill_dead_queues(void *obj, void *arg, int flags)
 {
 	struct call_queue *q = obj;
+  // cleanup lua state
+  /* FIXME wrong place!
+  if (q->luaState!=0) {
+        lua_close(q->luaState);
+        q->luaState=0;
+  }
+  */
 	char *queuename = arg;
 	if ((ast_strlen_zero(queuename) || !strcasecmp(queuename, q->name)) && q->dead) {
 		return CMP_MATCH;
@@ -9576,6 +9973,7 @@ static struct ast_cli_entry cli_queue[] = {
 	MEMBER(call_queue, membermacro, AST_DATA_STRING)		\
 	MEMBER(call_queue, membergosub, AST_DATA_STRING)		\
 	MEMBER(call_queue, defaultrule, AST_DATA_STRING)		\
+	MEMBER(call_queue, luascript, AST_DATA_STRING)		\
 	MEMBER(call_queue, sound_next, AST_DATA_STRING)			\
 	MEMBER(call_queue, sound_thereare, AST_DATA_STRING)		\
 	MEMBER(call_queue, sound_calls, AST_DATA_STRING)		\
